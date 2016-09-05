@@ -13,8 +13,8 @@ module.exports = function (grunt) {
                     describe:false,
                     it:false,
                     expect:false,
-                    beforeEace:false,
-                    afterEace:false,
+                    beforeEach:false,
+                    afterEach:false,
                     sinon:false
                 },
                 browser:true,
@@ -25,9 +25,11 @@ module.exports = function (grunt) {
             unit:{
                 options:{
                     framework:'jasmine2',
-                    launch_in_dev:['PhantomJS'],
+                    launch_in_dev:['Chrome'],
                     before_tests:'grunt jshint',
                     serve_files:[
+                        'node_modules/lodash/index.js',
+                        'node_modules/jquery/dist/jquery.js',
                         'node_modules/sinon/pkg/sinon.js',
                         'src/**/*.js',
                         'test/**/*.js'
@@ -43,7 +45,7 @@ module.exports = function (grunt) {
     });
 
 
-
     grunt.loadNpmTasks('grunt-contrib-jshint');
-    grunt.loadNpmTasks('grunt-contrib-testem')
+    grunt.loadNpmTasks('grunt-contrib-testem');
+    grunt.registerTask('default',['testem:run:unit']);
 };
