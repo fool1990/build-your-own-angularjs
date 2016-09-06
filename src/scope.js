@@ -37,6 +37,59 @@ class Scope {
 		}
 	};
 
+	$watchGroup(watchFns,listenerFn) {
+		const self = this;
+		const newValues = new Array(watchFns.length);
+		const oldValues = new Array(watchFns.length);
+		let firstRun = true;
+		let changeReactionScheduled = false;
+
+		if (watchFns.length === 0) {
+			let shouldCall = true;
+			self.$evalAsync(() => {
+				if (shouldCall) {
+					listenerFn(newValues,newValues,self);
+				}
+			});
+			return (() => shouldCall = false);
+		}
+
+		const watchGroupListener = () => {
+			if (firstRun) {
+				firstRun = false;
+				listenerFn(newValues,newValues,self);
+			} else {
+				listenerFn(newValues,oldValues,self);
+			}
+			changeReactionScheduled = false;
+		};
+
+		const destroyFunctions = _.map(watchFns,(watchFn,i) => {
+			return self.$watch(watchFn,(newValue,oldValue) => {
+				newValues[i] = newValue;
+				oldValues[i] = oldValue;
+				if (!changeReactionScheduled) {
+					changeReactionScheduled = true;
+					self.$evalAsync(watchGroupListener);
+				}
+			});
+		});
+
+		return () => {
+			_.forEach(destroyFunctions, (destroyFunction) => destroyFunction());
+		};
+		// _.forEach(watchFns, (watchFn,i) => {
+		// 	self.$watch(watchFn, (newValue,oldValue) => {
+		// 		newValues[i] = newValue;
+		// 		oldValues[i] = oldValue;
+		// 		if (!changeReactionScheduled) {
+		// 			changeReactionScheduled = true;
+		// 			self.$evalAsync(watchGroupListener);
+		// 		}
+		// 	});
+		// });
+	}
+
 	$$digestOnce() {
 		const self = this;
 		let newValue,oldValue,dirty;
@@ -176,41 +229,57 @@ class Scope {
 
 const scope = new Scope();
 
-scope.aValue = 'abc';
+let counter = 0;
+// let gotNewValues;
+// let gotOldValues;
+scope.aValue = 1;
+scope.bValue = 2;
 
-const watchCalls = [];
-
-scope.$watch(
-	(scope) => {
-		watchCalls.push('first');
-		return scope.aValue;
-	},
-	(newValue,oldValue,scope) => {}
-
-);
-
-const destroyWatch = scope.$watch(
-	(scope) => {
-		watchCalls.push('second');
-		destroyWatch();
-	},
-	(newValue,oldValue,scope) => {}
-);
-
-scope.$watch(
-	(scope) => {
-		watchCalls.push('third');
-		return scope.aValue;
-	},
-	(newValue,oldValue,scope) => {}
-);
-
+const destroyGroup = scope.$watchGroup([
+	(scope) => scope.aValue,
+	(scope) => scope.bValue
+],(newValues,oldValues,scope) => {
+	// gotNewValues = newValues;
+	// gotOldValues = oldValues;
+	counter++;
+});
 scope.$digest();
-console.log(watchCalls);
 
+scope.bValue = 3;
+destroyGroup();
+scope.$digest();
 
+console.log(counter,'1');
 
-
+// const watchCalls = [];
+//
+// scope.$watch(
+// 	(scope) => {
+// 		watchCalls.push('first');
+// 		return scope.aValue;
+// 	},
+// 	(newValue,oldValue,scope) => {}
+//
+// );
+//
+// const destroyWatch = scope.$watch(
+// 	() => {
+// 		watchCalls.push('second');
+// 		destroyWatch();
+// 	},
+// 	(newValue,oldValue,scope) => {}
+// );
+//
+// scope.$watch(
+// 	(scope) => {
+// 		watchCalls.push('third');
+// 		return scope.aValue;
+// 	},
+// 	(newValue,oldValue,scope) => {}
+// );
+//
+// scope.$digest();
+// console.log(watchCalls);
 
 
 
