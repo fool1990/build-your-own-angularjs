@@ -1,255 +1,344 @@
 /**
  * Created by Administrator on 2016/9/5.
  */
-// 'use strict';
+'use strict';
 
-// var _ = require('lodash');
+const _ = require('lodash');
 
-function initWatchVal() {
-    
+function initWatchVal() {}
+
+class Scope {
+	constructor () {
+		this.$$watchers = [];
+		this.$$lastDirtyWatch = null;
+		this.$$asyncQueue = [];
+		this.$$phase = null;
+		this.$$applyAsyncQueue = [];
+		this.$$applyAsyncId = null;
+		this.$$postDigestQueue = [];
+	}
+
+	$watch(watchFn,listenerFn,valueEq) {
+		const self =this;
+		let watcher = {
+			watchFn:watchFn,
+			listenerFn:listenerFn,
+			valueEq:!!valueEq,
+			last:initWatchVal
+		};
+		this.$$watchers.unshift(watcher);
+		this.$$lastDirtyWatch = null;
+		return () => {
+			let index = self.$$watchers.indexOf(watcher);
+			if (index >= 0) {
+				self.$$watchers.splice(index,1);
+				self.$$lastDirtyWatch = null;
+			}
+		}
+	};
+
+	$$digestOnce() {
+		const self = this;
+		let newValue,oldValue,dirty;
+		_.forEachRight(this.$$watchers,function (watcher) {
+			try {
+				if (watcher) {
+					newValue = watcher.watchFn(self);
+					oldValue = watcher.last;
+					if (!self.$$areEqual(newValue,oldValue,watcher.valueEq)){
+						self.$$lastDirtyWatch = watcher;
+						watcher.last = (watcher.valueEq ? _.cloneDeep(newValue) : newValue);
+						watcher.listenerFn(newValue,
+							(oldValue === initWatchVal ? newValue : oldValue),
+							self);
+						dirty = true;
+					}else if(self.$$lastDirtyWatch === watcher){
+						return false;
+					}
+				}
+			} catch (e) {
+				console.error(e);
+			}
+		});
+		return dirty;
+	};
+
+	$digest() {
+		let ttl = 10;
+		let dirty;
+		this.$$lastDirtyWatch = null;
+		this.$beginPhase("$digest");
+
+		if (this.$$applyAsyncId) {
+			clearTimeout(this.$$applyAsyncId);
+			this.$$flushApplyAsync();
+		}
+
+		do{
+			while(this.$$asyncQueue.length){
+				try {
+					let asyncTask = this.$$asyncQueue.shift();
+					asyncTask.scope.$eval(asyncTask.expression);
+				} catch (e) {
+					console.error(e);
+				}
+			}
+			dirty = this.$$digestOnce();
+			if((dirty || this.$$asyncQueue.length) && !(ttl--)){
+				this.$clearPhase();
+				throw "10次了";
+			}
+		} while(dirty || this.$$asyncQueue.length);
+		this.$clearPhase();
+
+		while (this.$$postDigestQueue.length) {
+			try {
+				this.$$postDigestQueue.shift()();
+			} catch (e) {
+				console.error(e);
+			}
+		}
+	};
+
+	$$areEqual(newValue,oldValue,valueEq) {
+		if (valueEq) {
+			return _.isEqual(newValue,oldValue);
+		} else {
+			return newValue === oldValue ||
+				(typeof newValue === 'number' && typeof oldValue === 'number' && isNaN(newValue) && isNaN(oldValue));
+		}
+	};
+
+	$eval(expr,locals) {
+		return expr(this,locals);
+	};
+
+	$apply(expr) {
+		try {
+			this.$beginPhase('$apply');
+			return this.$eval(expr);
+		} finally {
+			this.$clearPhase();
+			this.$digest();
+		}
+	};
+
+	$evalAsync(expr) {
+		const self = this;
+		if (!self.$$phase && !self.$$asyncQueue.length) {
+			setTimeout(function () {
+				if (self.$$asyncQueue.length){
+					self.$digest();
+				}
+			},0);
+		}
+		self.$$asyncQueue.push({scope:this,expression:expr});
+	};
+
+	$applyAsync(expr) {
+		const self = this;
+		self.$$applyAsyncQueue.push(function () {
+			self.$eval(expr);
+		});
+		if (self.$$applyAsyncId === null) {
+			self.$$applyAsyncId = setTimeout(function () {
+				self.$apply(_.bind(self.$$flushApplyAsync,self));
+			},0);
+		}
+	};
+
+	$$postDigest(fn) {
+		this.$$postDigestQueue.push(fn);
+	};
+
+	$$flushApplyAsync() {
+		while (this.$$applyAsyncQueue.length) {
+			try {
+				this.$$applyAsyncQueue.shift()();
+			} catch (e) {
+				console.error(e);
+			}
+		}
+		this.$$applyAsyncId = null;
+	};
+
+	$beginPhase(phase) {
+		if (this.$$phase) {
+			throw this.$$phase + 'in progress';
+		}
+		this.$$phase = phase;
+	};
+
+	$clearPhase() {
+		this.$$phase = null;
+	};
 }
 
-function Scope() {
-    this.$$watchers = [];
-    this.$$lastDirtyWatch = null;
-}
+const scope = new Scope();
 
-Scope.prototype.$watch = function (watchFn,listenerFn,valueEq) {
-    var watcher = {
-        watchFn:watchFn,
-        listenerFn:listenerFn,
-        valueEq:!!valueEq,
-        last:initWatchVal
-    };
-    this.$$watchers.push(watcher);
-    this.$$lastDirtyWatch = null;
-};
+scope.aValue = 'abc';
 
-Scope.prototype.$$digestOnce = function () {
-    var self = this;
-    var newValue,oldValue,dirty;
-    // _.forEach(this.$$watchers,function (watcher) {
-    //     newValue = watcher.watchFn(self);
-    //     oldValue = watcher.last;
-    //     console.log(newValue);
-    //     if (newValue !== oldValue){
-    //         self.$$lastDirtyWatch = watcher;
-    //         watcher.last = newValue;
-    //         watcher.listenerFn(newValue,
-    //             (oldValue === initWatchVal ? newValue : oldValue),
-    //             self);
-    //         dirty = true;
-    //     }
-    // });
-    this.$$watchers.forEach(function (watcher) {
-        newValue = watcher.watchFn(self);
-        oldValue = watcher.last;
-        // console.log(newValue);
-        if (newValue !== oldValue){
-            self.$$lastDirtyWatch = watcher;
-            watcher.last = newValue;
-            watcher.listenerFn(newValue,
-                (oldValue === initWatchVal ? newValue : oldValue),
-                self);
-            dirty = true;
-        }else if(self.$$lastDirtyWatch === watcher){
-            return false;
-        }
-    });
-    return dirty;
-};
+const watchCalls = [];
 
-Scope.prototype.$digest = function () {
-    var ttl = 10;
-    var dirty;
-    this.$$lastDirtyWatch = null;
-    do{
-        dirty = this.$$digestOnce();
-        if(dirty && !(ttl--)){
-            throw "10次了";
-        }
-    } while(dirty);
-};
+scope.$watch(
+	(scope) => {
+		watchCalls.push('first');
+		return scope.aValue;
+	},
+	(newValue,oldValue,scope) => {}
+
+);
+
+const destroyWatch = scope.$watch(
+	(scope) => {
+		watchCalls.push('second');
+		destroyWatch();
+	},
+	(newValue,oldValue,scope) => {}
+);
+
+scope.$watch(
+	(scope) => {
+		watchCalls.push('third');
+		return scope.aValue;
+	},
+	(newValue,oldValue,scope) => {}
+);
+
+scope.$digest();
+console.log(watchCalls);
 
 
-// function copy(source, destination) {
-//     var stackSource = [];
-//     var stackDest = [];
+
+
+
+
+
+// scope.counter = 0;
 //
-//     if (destination) {
-//         if (isTypedArray(destination) || isArrayBuffer(destination)) {
-//             throw ngMinErr('cpta', 'Can\'t copy! TypedArray destination cannot be mutated.');
-//         }
-//         if (source === destination) {
-//             throw ngMinErr('cpi', 'Can\'t copy! Source and destination are identical.');
-//         }
+// const destroyWatch = scope.$watch(
+// 	(scope) => scope.aValue,
+// 	(newValue,oldValue,scope) => scope.counter++
+// );
 //
-//         // Empty the destination object
-//         if (isArray(destination)) {
-//             destination.length = 0;
-//         } else {
-//             forEach(destination, function(value, key) {
-//                 if (key !== '$$hashKey') {
-//                     delete destination[key];
-//                 }
-//             });
-//         }
+// scope.$digest();
 //
-//         stackSource.push(source);
-//         stackDest.push(destination);
-//         return copyRecurse(source, destination);
-//     }
 //
-//     return copyElement(source);
+// console.log('1',scope.counter);
 //
-//     function copyRecurse(source, destination) {
-//         var h = destination.$$hashKey;
-//         var key;
-//         if (isArray(source)) {
-//             for (var i = 0, ii = source.length; i < ii; i++) {
-//                 destination.push(copyElement(source[i]));
-//             }
-//         } else if (isBlankObject(source)) {
-//             // createMap() fast path --- Safe to avoid hasOwnProperty check because prototype chain is empty
-//             for (key in source) {
-//                 destination[key] = copyElement(source[key]);
-//             }
-//         } else if (source && typeof source.hasOwnProperty === 'function') {
-//             // Slow path, which must rely on hasOwnProperty
-//             for (key in source) {
-//                 if (source.hasOwnProperty(key)) {
-//                     destination[key] = copyElement(source[key]);
-//                 }
-//             }
-//         } else {
-//             // Slowest path --- hasOwnProperty can't be called as a method
-//             for (key in source) {
-//                 if (hasOwnProperty.call(source, key)) {
-//                     destination[key] = copyElement(source[key]);
-//                 }
-//             }
-//         }
-//         setHashKey(destination, h);
-//         return destination;
-//     }
+// scope.aValue = 'def';
+// scope.$digest();
+// console.log('2',scope.counter);
 //
-//     function copyElement(source) {
-//         // Simple values
-//         if (!isObject(source)) {
-//             return source;
-//         }
+// scope.aValue = 'ghi';
+// destroyWatch();
+// scope.$digest();
+// console.log('2',scope.counter);
+
+// scope.$watch(
+// 	function (scope) {
+// 		scope.counter++;
+// 		return scope.aValue;
+// 	},
+// 	function (newValue,oldValue,scope) {
+// 	}
+// );
+// scope.$applyAsync(function (scope) {
+// 	scope.aValue = 'abc';
+// });
 //
-//         // Already copied values
-//         var index = stackSource.indexOf(source);
-//         if (index !== -1) {
-//             return stackDest[index];
-//         }
+// scope.$applyAsync(function (scope) {
+// 	scope.aValue = 'def';
+// });
 //
-//         if (isWindow(source) || isScope(source)) {
-//             throw ngMinErr('cpws',
-//                 'Can\'t copy! Making copies of Window or Scope instances is not supported.');
-//         }
+// scope.$digest();
+// console.log('2',scope.counter);
+// console.log('def',scope.aValue);
+// setTimeout(function () {
+// 	console.log('2',scope.counter);
+// },50);
+
+// scope.aValue = 'test apply';
+// scope.counter = 0;
 //
-//         var needsRecurse = false;
-//         var destination = copyType(source);
+// scope.$watch(
+// 	function (scope) {
+// 		return scope.aValue;
+// 	},
+// 	function (newValue,oldValue,scope) {
+// 		scope.counter++;
+// 	}
+// );
 //
-//         if (destination === undefined) {
-//             destination = isArray(source) ? [] : Object.create(getPrototypeOf(source));
-//             needsRecurse = true;
-//         }
+// scope.$digest();
+// console.log('1',scope.counter);
 //
-//         stackSource.push(source);
-//         stackDest.push(destination);
+// scope.$apply(function (scope) {
+// 	scope.aValue = 'test apply here';
+// });
 //
-//         return needsRecurse
-//             ? copyRecurse(source, destination)
-//             : destination;
-//     }
+// console.log('2',scope.counter);
+
+// scope.aValue = [1, 2, 3];
+// scope.asyncEvaluated = false;
+// scope.asyncEvaluatedTimes = 0;
 //
-//     function copyType(source) {
-//         switch (toString.call(source)) {
-//             case '[object Int8Array]':
-//             case '[object Int16Array]':
-//             case '[object Int32Array]':
-//             case '[object Float32Array]':
-//             case '[object Float64Array]':
-//             case '[object Uint8Array]':
-//             case '[object Uint8ClampedArray]':
-//             case '[object Uint16Array]':
-//             case '[object Uint32Array]':
-//                 return new source.constructor(copyElement(source.buffer), source.byteOffset, source.length);
+// scope.$watch(
+// 	function(scope) {
+// 		if (scope.asyncEvaluatedTimes < 2) {
+// 			scope.$evalAsync(function(scope) {
+// 				scope.asyncEvaluatedTimes++;
+// 			});
+// 		}
+// 		return scope.aValue;
+// 	},
+// 	function(newValue, oldValue, scope) { }
+// );
 //
-//             case '[object ArrayBuffer]':
-//                 // Support: IE10
-//                 if (!source.slice) {
-//                     // If we're in this case we know the environment supports ArrayBuffer
-//                     /* eslint-disable no-undef */
-//                     var copied = new ArrayBuffer(source.byteLength);
-//                     new Uint8Array(copied).set(new Uint8Array(source));
-//                     /* eslint-enable */
-//                     return copied;
-//                 }
-//                 return source.slice(0);
+// scope.$digest();
+// console.log('number',scope.asyncEvaluatedTimes);
+
+// scope.aValue = [1, 2, 3];
 //
-//             case '[object Boolean]':
-//             case '[object Number]':
-//             case '[object String]':
-//             case '[object Date]':
-//                 return new source.constructor(source.valueOf());
+// scope.phaseInWatchFunction = undefined;
+// scope.phaseInListenerFunction = undefined;
+// scope.phaseInApplyFunction = undefined;
 //
-//             case '[object RegExp]':
-//                 var re = new RegExp(source.source, source.toString().match(/[^\/]*$/)[0]);
-//                 re.lastIndex = source.lastIndex;
-//                 return re;
+// scope.$watch(
+// 	function(scope) {
+// 		scope.phaseInWatchFunction = scope.$$phase;
+// 		return scope.aValue;
+// 	},
+// 	function(newValue, oldValue, scope) {
+// 		scope.phaseInListenerFunction = scope.$$phase;
+// 	}
+// );
 //
-//             case '[object Blob]':
-//                 return new source.constructor([source], {type: source.type});
-//         }
+// scope.$apply(function(scope) {
+// 	scope.phaseInApplyFunction = scope.$$phase;
+// });
 //
-//         if (isFunction(source.cloneNode)) {
-//             return source.cloneNode(true);
-//         }
-//     }
-// }
+// console.log(scope.phaseInWatchFunction,'$digest');
+// console.log(scope.phaseInListenerFunction,'$digest');
+// console.log(scope.phaseInApplyFunction,'$apply');
+
+// scope.aValue = "abc";
+// scope.counter = 0;
 //
-// function equals(o1, o2) {
-//     if (o1 === o2) return true;
-//     if (o1 === null || o2 === null) return false;
-//     // eslint-disable-next-line no-self-compare
-//     if (o1 !== o1 && o2 !== o2) return true; // NaN === NaN
-//     var t1 = typeof o1, t2 = typeof o2, length, key, keySet;
-//     if (t1 === t2 && t1 === 'object') {
-//         if (isArray(o1)) {
-//             if (!isArray(o2)) return false;
-//             if ((length = o1.length) === o2.length) {
-//                 for (key = 0; key < length; key++) {
-//                     if (!equals(o1[key], o2[key])) return false;
-//                 }
-//                 return true;
-//             }
-//         } else if (isDate(o1)) {
-//             if (!isDate(o2)) return false;
-//             return equals(o1.getTime(), o2.getTime());
-//         } else if (isRegExp(o1)) {
-//             if (!isRegExp(o2)) return false;
-//             return o1.toString() === o2.toString();
-//         } else {
-//             if (isScope(o1) || isScope(o2) || isWindow(o1) || isWindow(o2) ||
-//                 isArray(o2) || isDate(o2) || isRegExp(o2)) return false;
-//             keySet = createMap();
-//             for (key in o1) {
-//                 if (key.charAt(0) === '$' || isFunction(o1[key])) continue;
-//                 if (!equals(o1[key], o2[key])) return false;
-//                 keySet[key] = true;
-//             }
-//             for (key in o2) {
-//                 if (!(key in keySet) &&
-//                     key.charAt(0) !== '$' &&
-//                     isDefined(o2[key]) &&
-//                     !isFunction(o2[key])) return false;
-//             }
-//             return true;
-//         }
-//     }
-//     return false;
-// }
+// scope.$watch(
+// 	function (scope) {
+// 		return scope.aValue;
+// 	},
+// 	function (newValue,oldValue,scope) {
+// 		scope.counter++;
+// 	}
+// );
+//
+// scope.$evalAsync(function (scope) {
+//
+// });
+//
+// console.log('0',scope.counter);
+// setTimeout(function () {
+// 	console.log(scope.counter,'1');
+// },50);
