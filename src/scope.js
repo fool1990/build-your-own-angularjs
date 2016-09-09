@@ -12,6 +12,7 @@ class Scope {
 		this.$$watchers = [];
 		this.$$lastDirtyWatch = null;
 		this.$$asyncQueue = [];
+		this.$root = this;
 		this.$$phase = null;
 		this.$$applyAsyncQueue = [];
 		this.$$applyAsyncId = null;
@@ -28,12 +29,12 @@ class Scope {
 			last:initWatchVal
 		};
 		this.$$watchers.unshift(watcher);
-		this.$$lastDirtyWatch = null;
+		this.$root.$$lastDirtyWatch = null;
 		return () => {
 			let index = self.$$watchers.indexOf(watcher);
 			if (index >= 0) {
 				self.$$watchers.splice(index,1);
-				self.$$lastDirtyWatch = null;
+				self.$root.$$lastDirtyWatch = null;
 			}
 		}
 	};
@@ -94,13 +95,13 @@ class Scope {
 						newValue = watcher.watchFn(scope);
 						oldValue = watcher.last;
 						if (!scope.$$areEqual(newValue,oldValue,watcher.valueEq)){
-							self.$$lastDirtyWatch = watcher;
+							scope.$root.$$lastDirtyWatch = watcher;
 							watcher.last = (watcher.valueEq ? _.cloneDeep(newValue) : newValue);
 							watcher.listenerFn(newValue,
 								(oldValue === initWatchVal ? newValue : oldValue),
 								scope);
 							dirty = true;
-						}else if(self.$$lastDirtyWatch === watcher){
+						}else if(scope.$root.$$lastDirtyWatch === watcher){
 							continueLoop = false;
 							return false;
 						}
@@ -117,11 +118,11 @@ class Scope {
 	$digest() {
 		let ttl = 10;
 		let dirty;
-		this.$$lastDirtyWatch = null;
+		this.$root.$$lastDirtyWatch = null;
 		this.$beginPhase("$digest");
 
-		if (this.$$applyAsyncId) {
-			clearTimeout(this.$$applyAsyncId);
+		if (this.$root.$$applyAsyncId) {
+			clearTimeout(this.$root.$$applyAsyncId);
 			this.$$flushApplyAsync();
 		}
 
@@ -170,7 +171,7 @@ class Scope {
 			return this.$eval(expr);
 		} finally {
 			this.$clearPhase();
-			this.$digest();
+			this.$root.$digest();
 		}
 	};
 
@@ -179,7 +180,7 @@ class Scope {
 		if (!self.$$phase && !self.$$asyncQueue.length) {
 			setTimeout(function () {
 				if (self.$$asyncQueue.length){
-					self.$digest();
+					self.$root.$digest();
 				}
 			},0);
 		}
@@ -191,8 +192,8 @@ class Scope {
 		self.$$applyAsyncQueue.push(function () {
 			self.$eval(expr);
 		});
-		if (self.$$applyAsyncId === null) {
-			self.$$applyAsyncId = setTimeout(function () {
+		if (self.$root.$$applyAsyncId === null) {
+			self.$root.$$applyAsyncId = setTimeout(function () {
 				self.$apply(_.bind(self.$$flushApplyAsync,self));
 			},0);
 		}
@@ -210,7 +211,7 @@ class Scope {
 				console.error(e);
 			}
 		}
-		this.$$applyAsyncId = null;
+		this.$root.$$applyAsyncId = null;
 	};
 
 	$beginPhase(phase) {
@@ -224,10 +225,22 @@ class Scope {
 		this.$$phase = null;
 	};
 
-	$new() {
-		const child = Object.create(this,{$$watchers:{value:[],writable: true, enumerable: true, configurable: true}});
-		this.$$children.push(child);
+	$new(isolated,parent) {
+		let child;
+		parent = parent || this;
+		if (isolated) {
+			child = new Scope();
+			child.$root = parent.$root;
+			child.$$asyncQueue = parent.$$asyncQueue;
+			child.$$postDigestQueue = parent.$$postDigestQueue;
+			child.$$applyAsyncQueue = parent.$$applyAsyncQueue;
+		} else {
+			child = Object.create(this,{$$watchers:{value:[],writable: true, enumerable: true, configurable: true}});
+		}
+		parent.$$children.push(child);
+		child.$$watchers = [];
 		child.$$children = [];
+		child.$parent = parent;
 		return child;
 	};
 
@@ -238,250 +251,113 @@ class Scope {
 			return false;
 		}
 	};
+
+	$destroy() {
+		if (this.$parent) {
+			const siblings = this.$parent.$$children;
+			const indexOfThis = siblings.indexOf(this);
+			if (indexOfThis >= 0) {
+				siblings.splice(indexOfThis,1);
+			}
+		}
+		this.$$watchers = null;
+	};
+
+	$watchCollection(watchFn,listenerFn) {
+		let newValue;
+		let oldValue;
+		let changeCount = 0;
+		const internalWatchFn = (scope) => {
+			newValue = watchFn(scope);
+			// console.log(newValue);
+			if (_.isObject(newValue)) {
+				if (_.isArray(newValue)) {
+					if (!_.isArray(oldValue)) {
+						changeCount++;
+						oldValue = [];
+					}
+					if (newValue.length !== oldValue.length) {
+						changeCount++;
+						oldValue.length = newValue.length;
+					}
+					_.forEach(newValue,(newItem,i) => {
+						let bothNan = _.isNaN(newItem) && _.isNaN(oldValue[i]);
+						if (!bothNan && newItem !== oldValue[i]) {
+							changeCount++;
+							oldValue[i] = newItem;
+						}
+					});
+				}else{
+
+				}
+			} else {
+				if (!this.$$areEqual(newValue,oldValue,false)) {
+					changeCount++;
+				}
+				oldValue = newValue;
+			}
+
+			return changeCount;
+		};
+
+		const internalListenerFn = () => {
+			listenerFn(newValue,oldValue,this);
+		};
+
+		return this.$watch(internalWatchFn,internalListenerFn);
+	};
 }
 
-const parent = new Scope();
-const child = parent.$new();
+const scope = new Scope();
+scope.arr = [1,2,NaN];
+scope.counter = 0;
 
-parent.aValue = 'abc';
-child.$watch(
-	(scope) => scope.aValue,
-	(newValue,oldValue,scope) =>scope.aValueWas = newValue
+scope.$watchCollection(
+	(scope) => scope.arr,
+	(newValue,oldValue,scope) => {
+		scope.counter++;
+	}
 );
 
-parent.$digest();
-console.log('abc',child.aValueWas);
+scope.$digest();
+console.log(scope.counter,'1');
 
-// const child2 = parent.$new();
-// const child2_1 = child2.$new();
-//
-// console.log('2',parent.$$children.length);
-// console.log('child1',parent.$$children[0]);
-// console.log('child2',parent.$$children[1]);
-// console.log('child2_1',child2.$$children[0]);
-//
-// console.log('0',child1.$$children.length);
-// console.log('1',child2.$$children.length);
+scope.arr[1] = 20;
+scope.$digest();
+console.log(scope.counter,'2');
 
-// parent.aValue = 'abc';
-// parent.$watch(
-// 	(scope) => scope.aValue,
-// 	(newValue,oldValue,scope) => scope.aValues = newValue
-// );
-//
-// child.$digest();
-// console.log(child.aValues,'undefined');
-
-// parent.user ={name:'Joe'};
-// child.user.name = 'Jill';
-//
-// child.user.age = 18;
-//
-// console.log(child.user.age,'childname');
-// console.log(parent.user.age,'parentname');
+scope.$digest();
+console.log(scope.counter,'2');
 
 
 
-// const parent = new Scope();
-// parent.aValue = [1,2,3];
+// function timeout(ms) {
+// 	return new Promise((resolve, reject) => {
+// 		console.log('aaa');
+// 		setTimeout(resolve, ms, 'done');
+// 	});
+// }
 //
-// const child = parent.$new();
-// child.counter = 0;
-//
-// child.$watch(
-// 	(scope) => scope.aValue,
-// 	(newValue,oldValue,scope) => scope.counter++,
-// 	true
-// );
-//
-// child.$digest();
-// console.log(child.counter,'1');
-//
-// child.aValue.push(4);
-// child.$digest();
-//
-// console.log(child.counter,'2');
-// console.log(child.aValue,'[1,2,3,4]');
-
-// let counter = 0;
-// // let gotNewValues;
-// // let gotOldValues;
-// scope.aValue = 1;
-// scope.bValue = 2;
-//
-// const destroyGroup = scope.$watchGroup([
-// 	(scope) => scope.aValue,
-// 	(scope) => scope.bValue
-// ],(newValues,oldValues,scope) => {
-// 	// gotNewValues = newValues;
-// 	// gotOldValues = oldValues;
-// 	counter++;
+// timeout(100).then((value) => {
+// 	console.log(value);
+// 	console.log('bbb');
 // });
-// scope.$digest();
-//
-// scope.bValue = 3;
-// destroyGroup();
-// scope.$digest();
-//
-// console.log(counter,'1');
 
-// const watchCalls = [];
-//
-// scope.$watch(
-// 	(scope) => {
-// 		watchCalls.push('first');
-// 		return scope.aValue;
-// 	},
-// 	(newValue,oldValue,scope) => {}
-//
-// );
-//
-// const destroyWatch = scope.$watch(
-// 	() => {
-// 		watchCalls.push('second');
-// 		destroyWatch();
-// 	},
-// 	(newValue,oldValue,scope) => {}
-// );
-//
-// scope.$watch(
-// 	(scope) => {
-// 		watchCalls.push('third');
-// 		return scope.aValue;
-// 	},
-// 	(newValue,oldValue,scope) => {}
-// );
-//
-// scope.$digest();
-// console.log(watchCalls);
-
-
-
-// scope.counter = 0;
-//
-// const destroyWatch = scope.$watch(
-// 	(scope) => scope.aValue,
-// 	(newValue,oldValue,scope) => scope.counter++
-// );
-//
-// scope.$digest();
-//
-//
-// console.log('1',scope.counter);
-//
-// scope.aValue = 'def';
-// scope.$digest();
-// console.log('2',scope.counter);
-//
-// scope.aValue = 'ghi';
-// destroyWatch();
-// scope.$digest();
-// console.log('2',scope.counter);
-
-// scope.$watch(
-// 	function (scope) {
-// 		scope.counter++;
-// 		return scope.aValue;
-// 	},
-// 	function (newValue,oldValue,scope) {
-// 	}
-// );
-// scope.$applyAsync(function (scope) {
-// 	scope.aValue = 'abc';
+// let promise = new Promise((resolve,reject) => {
+// 	console.log('new promise');
+// 	resolve();
 // });
-//
-// scope.$applyAsync(function (scope) {
-// 	scope.aValue = 'def';
-// });
-//
-// scope.$digest();
-// console.log('2',scope.counter);
-// console.log('def',scope.aValue);
-// setTimeout(function () {
-// 	console.log('2',scope.counter);
-// },50);
+// promise.then(() => console.log('resolved'));
+// console.log('hi');
 
-// scope.aValue = 'test apply';
-// scope.counter = 0;
-//
-// scope.$watch(
-// 	function (scope) {
-// 		return scope.aValue;
-// 	},
-// 	function (newValue,oldValue,scope) {
-// 		scope.counter++;
-// 	}
-// );
-//
-// scope.$digest();
-// console.log('1',scope.counter);
-//
-// scope.$apply(function (scope) {
-// 	scope.aValue = 'test apply here';
-// });
-//
-// console.log('2',scope.counter);
+var p1 = new Promise(function (resolve, reject) {
+	setTimeout(() => reject(new Error('fail')), 3000)
+});
 
-// scope.aValue = [1, 2, 3];
-// scope.asyncEvaluated = false;
-// scope.asyncEvaluatedTimes = 0;
-//
-// scope.$watch(
-// 	function(scope) {
-// 		if (scope.asyncEvaluatedTimes < 2) {
-// 			scope.$evalAsync(function(scope) {
-// 				scope.asyncEvaluatedTimes++;
-// 			});
-// 		}
-// 		return scope.aValue;
-// 	},
-// 	function(newValue, oldValue, scope) { }
-// );
-//
-// scope.$digest();
-// console.log('number',scope.asyncEvaluatedTimes);
+var p2 = new Promise(function (resolve, reject) {
+	setTimeout(() => resolve(p1), 1000)
+});
 
-// scope.aValue = [1, 2, 3];
-//
-// scope.phaseInWatchFunction = undefined;
-// scope.phaseInListenerFunction = undefined;
-// scope.phaseInApplyFunction = undefined;
-//
-// scope.$watch(
-// 	function(scope) {
-// 		scope.phaseInWatchFunction = scope.$$phase;
-// 		return scope.aValue;
-// 	},
-// 	function(newValue, oldValue, scope) {
-// 		scope.phaseInListenerFunction = scope.$$phase;
-// 	}
-// );
-//
-// scope.$apply(function(scope) {
-// 	scope.phaseInApplyFunction = scope.$$phase;
-// });
-//
-// console.log(scope.phaseInWatchFunction,'$digest');
-// console.log(scope.phaseInListenerFunction,'$digest');
-// console.log(scope.phaseInApplyFunction,'$apply');
-
-// scope.aValue = "abc";
-// scope.counter = 0;
-//
-// scope.$watch(
-// 	function (scope) {
-// 		return scope.aValue;
-// 	},
-// 	function (newValue,oldValue,scope) {
-// 		scope.counter++;
-// 	}
-// );
-//
-// scope.$evalAsync(function (scope) {
-//
-// });
-//
-// console.log('0',scope.counter);
-// setTimeout(function () {
-// 	console.log(scope.counter,'1');
-// },50);
+p2
+	.then(result => console.log(result))
+	.catch(error => console.log(error));
